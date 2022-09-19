@@ -1,7 +1,6 @@
 import os
 import re
 import pdb
-from tqdm import tqdm
 import argparse
 import string
 import random
@@ -21,6 +20,7 @@ from data import QuizDataset
 from model import BertBaseline
 
 from baseline import get_parser
+from utils import preprocess_token
 
 
 def find_majority(k):
@@ -49,16 +49,16 @@ if __name__ == '__main__':
 
 	model = BertBaseline(opt)
 	model.eval()
-	model = model.cuda()
+	model = model.cuda() if opt.accelerator == 'gpu' else model
 
 	wandb_logger = WandbLogger()
 	artifact = wandb_logger.experiment.use_artifact(opt.ckpt, type='model')
 	artifact_dir = artifact.download()
-	model.load_state_dict(torch.load(os.path.join(artifact_dir, 'model.ckpt'))['state_dict'])
+	model.load_state_dict(torch.load(os.path.join(artifact_dir, 'model.ckpt'), map_location=torch.device('cpu'))['state_dict'])
 
 	submission = []
 	with torch.no_grad():
-		for idx, pack in enumerate(tqdm(dataset_loader)):
+		for idx, pack in enumerate(dataset_loader):
 			outs, input_ids, ids = model.forward(pack)
 			label_indices = np.argmax(outs.cpu().numpy(), axis=2)
 
@@ -73,31 +73,18 @@ if __name__ == '__main__':
 						new_labels.append(label_idx)
 						new_tokens.append(token)
 
-				# print(csv[csv['Record Number']==id.item()]['Title'].tolist()[0])
-				# if 'Black Satin Pleated Evening Handbag Wedding' in csv[csv['Record Number']==id.item()]['Title'].tolist()[0]:
-				# 	pdb.set_trace()
-				origin_text = csv[csv['Record Number']==id.item()]['Title'].tolist()[0].split()
-				# if len(origin_text) > len(new_tokens):
-				# 	print('origin: {} new: {}'.format(len(origin_text), len(new_tokens)))
+
+				origin_text = [x for x in csv[csv['Record Number']==id.item()]['Title'].tolist()[0].split()]
 				idx = 0
+				assert len(origin_text) == len(new_tokens)
 				while idx < len(new_tokens):
-					if len(re.findall(r'[\u4e00-\u9fff]+', origin_text[idx])) > 0:
-						print('skip chinese sentence')
-						break
-					if new_tokens[idx] == origin_text[idx] or new_tokens[idx]=='[UNK]':
-						submission.append([id.item(), idx2tag.get(new_labels[idx], random.choice(list(tag_mapping.keys()))), origin_text[idx]])
-						idx += 1
+					if new_labels[idx] != 0:
+						submission.append([id.item(), idx2tag[new_labels[idx]], origin_text[idx]])
 					else:
-						s = new_tokens[idx]
-						label_list = [new_labels[idx]]
-						while s != origin_text[idx]:
-							s += new_tokens[idx+1]
-							label_list.append(new_labels[idx+1])
-							new_tokens = new_tokens[:idx+1] + new_tokens[idx+2:]
-							new_labels = new_labels[:idx+1] + new_labels[idx+2:]
-						idx += 1
-						majority = find_majority(label_list)[0]
-						submission.append([id.item(), idx2tag.get(majority, random.choice(list(tag_mapping.keys()))), s])
+						last = submission.pop()
+						last[-1] += ' {}'.format(origin_text[idx])
+						submission.append(last)
+					idx += 1
 
 	submission = pd.DataFrame(submission, columns=['Record Number', 'Aspect Name', 'Aspect Value'])
 	submission = submission[submission['Aspect Name']!='No Tag']

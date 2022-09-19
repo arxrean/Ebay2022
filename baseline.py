@@ -29,6 +29,7 @@ def get_parser():
 	parser.add_argument('--tag2idx', type=str, default='./dataset/ebay/tag2idx.npy')
 
 	# data
+	parser.add_argument('--label_all_tokens', action='store_true')
 	parser.add_argument('--train_frac', type=float, default=1.0)
 	parser.add_argument('--val_frac', type=float, default=1.0)
 	parser.add_argument('--test_frac', type=float, default=1.0)
@@ -54,7 +55,7 @@ def get_parser():
 
 	# model
 	parser.add_argument('--pretrain', action='store_true')
-	parser.add_argument('--backbone', type=str, default='dslim/bert-base-NER')
+	parser.add_argument('--backbone', type=str, default='roberta-base')
 	parser.add_argument('--embed_dim', type=int, default=32)
 	parser.add_argument('--hidden_dim', type=int, default=32)
 	parser.add_argument('--word_embed_size', type=int, default=128)
@@ -74,11 +75,15 @@ def main():
 	data_module = DERDatasetModule(opt)
 
 	model = BertBaseline(opt)
-	wandb_logger = WandbLogger(project="Ebay", log_model=True)
-	wandb_logger.experiment.config.update(vars(opt))
+	if not opt.test_only:
+		wandb_logger = WandbLogger(project="Ebay", log_model=True)
+		wandb_logger.experiment.config.update(vars(opt))
+	else:
+		id = opt.ckpt.split('/')[-1].split(':')[0].split('-')[1]
+		wandb_logger = WandbLogger(id=id, project="Ebay", resume="must")
 	model.wandb_logger = wandb_logger
 
-	checkpoint_callback = ModelCheckpoint(monitor="val_loss", mode="min")
+	checkpoint_callback = ModelCheckpoint(monitor="val_acc", mode="max")
 	trainer = Trainer(accelerator=opt.accelerator, devices=1, logger=wandb_logger, callbacks=[checkpoint_callback], max_epochs=opt.epoches)
 
 	if not opt.test_only:

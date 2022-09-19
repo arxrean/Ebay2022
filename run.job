@@ -1,9 +1,10 @@
 #!/bin/bash
 
 #$ -q gpu
-#$ -l gpu_card=1
+#$ -l gpu_card=0
 #$ -M zkou@nd.edu
 #$ -m abe
 #$ -r y
 
-python baseline.py --num_workers 0 --epoches 20 --accelerator gpu
+# python baseline.py --num_workers 0 --backbone bert-base-uncased --epoches 50 --accelerator gpu --base_lr 1e-4
+python baseline_sub.py --num_workers 0 --test_only --ckpt ziyikou/Ebay/model-26amrtzn:v0 --accelerator gpu --backbone bert-base-uncased

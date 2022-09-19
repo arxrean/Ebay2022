@@ -1,11 +1,15 @@
 import os
 import pdb
+from string import punctuation
 import pandas as pd
 import numpy as np
 from PIL import Image
 import torch
 from sklearn.model_selection import train_test_split
 from transformers import AutoTokenizer
+from transformers import BertTokenizerFast
+from transformers import DebertaTokenizerFast
+from transformers import RobertaTokenizerFast
 
 import pytorch_lightning as pl
 
@@ -14,16 +18,25 @@ import torchvision.transforms as transforms
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader 
 
+from utils import preprocess_token
 
 
 class NERDataset:
-	def __init__(self, opt, df):
+	def __init__(self, opt, df, mode):
 		# input is annotated data frame
 		self.opt = opt
-		self.texts = [eval(x) for x in df['Token'].to_list()]
+		self.mode = mode
+		self.texts = [[preprocess_token(t) for t in eval(x)] for x in df['Token'].to_list()]
 		self.tags = [eval(x) for x in df['Tag'].to_list()]
-		model_checkpoint = opt.backbone
-		self.tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+		for x, y in zip(self.texts, self.tags):
+			assert len(x) == len(y)
+
+		if 'deberta' in opt.backbone:
+			self.tokenizer = DebertaTokenizerFast.from_pretrained(opt.backbone)
+		elif 'robert' in opt.backbone:
+			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
+		else:
+			self.tokenizer = BertTokenizerFast.from_pretrained(opt.backbone)
 
 		self.tag_mapping = {k:v+1 for k,v in np.load(opt.tag2idx, allow_pickle=True).item().items()}
 
@@ -33,37 +46,33 @@ class NERDataset:
 	def __getitem__(self, item):
 		text = self.texts[item]
 		tags = self.tags[item]
+		# print(' '.join(text))
+		# if 'Pioneer Express Route' in ' '.join(text):
+		# 	pdb.set_trace()
 
-		ids = []
-		target_tag = []
+		tokens, labels = self.align_label(text, tags)
 
-		# tokenize words and define tags accordingly
-		# running -> [run, ##ning]
-		# tags - ['O', 'O']
-		for i, s in enumerate(text):
-			inputs = self.tokenizer.encode(s, add_special_tokens=False)
-			input_len = len(inputs)
-			ids.extend(inputs)
-			target_tag.extend([self.tag_mapping[tags[i]]] * input_len)
+		return tokens['input_ids'][0], tokens['token_type_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long)
 
-		# truncate
-		ids = ids[:self.opt.max_len - 2]
-		target_tag = target_tag[:self.opt.max_len - 2]
 
-		# add special tokens
-		ids = [101] + ids + [102]
-		target_tag = [0] + target_tag + [0]
-		mask = [1] * len(ids)
-		token_type_ids = [0] * len(ids)
+	def align_label(self, texts, labels):
+		tokenized_inputs = self.tokenizer(' '.join(texts), padding='max_length', max_length=self.opt.max_len, truncation=True, return_tensors="pt")
 
-		# construct padding
-		padding_len = self.opt.max_len - len(ids)
-		ids = ids + ([0] * padding_len)
-		mask = mask + ([0] * padding_len)
-		token_type_ids = token_type_ids + ([0] * padding_len)
-		target_tag = target_tag + ([0] * padding_len)
+		word_ids = tokenized_inputs.word_ids()
 
-		return torch.tensor(ids, dtype=torch.long), torch.tensor(mask, dtype=torch.long), torch.tensor(token_type_ids, dtype=torch.long), torch.tensor(target_tag, dtype=torch.long)
+		previous_word_idx = None
+		label_ids = []
+
+		for word_idx in word_ids:
+			if word_idx is None:
+				label_ids.append(0)
+			elif word_idx != previous_word_idx:
+				label_ids.append(self.tag_mapping.get(labels[word_idx], 0))
+			else:
+				label_ids.append(self.tag_mapping[labels[word_idx]] if self.opt.label_all_tokens else 0)
+			previous_word_idx = word_idx
+
+		return tokenized_inputs, label_ids
 
 
 class QuizDataset:
@@ -71,11 +80,17 @@ class QuizDataset:
 		# input is annotated data frame
 		self.df = df
 		self.opt = opt
+
 		self.ids = df['Record Number'].to_list()
-		self.texts = df['Title'].str.split(' ').to_list()
+		self.texts = [[preprocess_token(x) for x in ls] for ls in df['Title'].str.split(' ').to_list()]
 		print(f"- max tokens: {max([len(x) for x in self.texts])}, min tokens: {min([len(x) for x in self.texts])}, avg tokens: {np.mean([len(x) for x in self.texts])}")
-		model_checkpoint = opt.backbone
-		self.tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+		
+		if 'deberta' in opt.backbone:
+			self.tokenizer = DebertaTokenizerFast.from_pretrained(opt.backbone)
+		elif 'robert' in opt.backbone:
+			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
+		else:
+			self.tokenizer = BertTokenizerFast.from_pretrained(opt.backbone)
 
 		self.tag_mapping = {k:v+1 for k,v in np.load(opt.tag2idx, allow_pickle=True).item().items()}
 
@@ -84,34 +99,33 @@ class QuizDataset:
 
 	def __getitem__(self, item):
 		text = self.texts[item]
+		tags = ['Brand'] * len(text)
 
-		ids = []
-		target_tag = []
+		tokens, labels = self.align_label(text, tags)
 
-		# tokenize words and define tags accordingly
-		# running -> [run, ##ning]
-		# tags - ['O', 'O']
-		for i, s in enumerate(text):
-			inputs = self.tokenizer.encode(s, add_special_tokens=False)
-			input_len = len(inputs)
-			ids.extend(inputs)
+		return tokens['input_ids'][0], tokens['token_type_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long), self.ids[item]
 
-		# truncate
-		ids = ids[:self.opt.max_len - 2]
 
-		# add special tokens
-		ids = [101] + ids + [102]
-		mask = [1] * len(ids)
-		token_type_ids = [0] * len(ids)
+	def align_label(self, texts, labels):
+		tokenized_inputs = self.tokenizer(' '.join(texts), padding='max_length', max_length=self.opt.max_len, truncation=True, return_tensors="pt")
 
-		# construct padding
-		padding_len = self.opt.max_len - len(ids)
-		ids = ids + ([0] * padding_len)
-		mask = mask + ([0] * padding_len)
-		token_type_ids = token_type_ids + ([0] * padding_len)
-		target_tag = [0] * self.opt.max_len
+		word_ids = tokenized_inputs.word_ids()
 
-		return torch.tensor(ids, dtype=torch.long), torch.tensor(mask, dtype=torch.long), torch.tensor(token_type_ids, dtype=torch.long), torch.tensor(target_tag, dtype=torch.long), self.ids[item]
+		previous_word_idx = None
+		label_ids = []
+
+		for word_idx in word_ids:
+
+			if word_idx is None:
+				label_ids.append(0)
+
+			elif word_idx != previous_word_idx:
+				label_ids.append(self.tag_mapping[labels[word_idx]])
+			else:
+				label_ids.append(self.tag_mapping[labels[word_idx]] if self.opt.label_all_tokens else 0)
+			previous_word_idx = word_idx
+
+		return tokenized_inputs, label_ids
 
 
 class DERDatasetModule(pl.LightningDataModule):
@@ -120,9 +134,9 @@ class DERDatasetModule(pl.LightningDataModule):
 		self.opt = opt
 		self.df = pd.read_csv(opt.ner_path)
 
-		self.data_train = NERDataset(opt, self.df[self.df['mode']==0])
-		self.data_val = NERDataset(opt, self.df[self.df['mode']==1])
-		self.data_test = NERDataset(opt, self.df[self.df['mode']==2])
+		self.data_train = NERDataset(opt, self.df[self.df['mode']==0], mode='train')
+		self.data_val = NERDataset(opt, self.df[self.df['mode']==1], mode='val')
+		self.data_test = NERDataset(opt, self.df[self.df['mode']==2], mode='test')
 
 	def train_dataloader(self):
 		
