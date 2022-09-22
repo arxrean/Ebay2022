@@ -34,14 +34,15 @@ class BertBaseline(pl.LightningModule):
 		self.tag_mapping_inverse = dict((v, k) for k, v in self.tag_mapping.items())
 
 		if 'deberta' in opt.backbone:
-			self.model = DebertaV2ForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1)
+			# model = torch.load('./dataset/pytorch_model.bin.1')
+			self.model = DebertaV2ForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1, ignore_mismatched_sizes=True)
 		elif 'robert' in opt.backbone:
 			self.model = RobertaForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1, ignore_mismatched_sizes=True)
 		else:
 			self.model = BertForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1)
 
 		if 'deberta' in opt.backbone:
-			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained('microsoft/deberta-v3-base')
 		elif 'robert' in opt.backbone:
 			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
 		else:

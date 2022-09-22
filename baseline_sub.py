@@ -63,12 +63,9 @@ if __name__ == '__main__':
 			for tokens, labels, id in zip(input_ids, label_indices, ids):
 				new_tokens, new_labels = [], []
 				for i, (token, label_idx) in enumerate(zip(tokens, labels)):
-					if token == '<s>':
-						tokens[i+1] = '{}{}'.format(chr(288), tokens[i+1])
+					if token in ['[CLS]', '[SEP]', '[PAD]']:
 						continue
-					if token in ['</s>', '<pad>']:
-						continue
-					if token.startswith(chr(288)):
+					if token.startswith(chr(9601)):
 						new_labels.append(label_idx)
 						new_tokens.append(token[1:])
 					else:

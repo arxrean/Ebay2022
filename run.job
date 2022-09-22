@@ -9,4 +9,5 @@
 # python baseline.py --num_workers 0 --backbone bert-base-uncased --epoches 50 --accelerator gpu --base_lr 1e-4
 # python baseline_sub.py --num_workers 0 --test_only --ckpt ziyikou/Ebay/model-26amrtzn:v0 --accelerator gpu --backbone bert-base-uncased
 # python baseline.py --num_workers 0 --backbone microsoft/deberta-v3-base --epoches 50 --accelerator gpu --base_lr 1e-4
-python baseline.py --num_workers 0 --backbone Jean-Baptiste/roberta-large-ner-english --epoches 50 --accelerator gpu --base_lr 1e-4
+# python baseline.py --num_workers 0 --backbone Jean-Baptiste/roberta-large-ner-english --epoches 100 --batch_size 64 --accelerator gpu --base_lr 1e-4
+CUDA_VISIBLE_DEVICES=2 python baseline.py --num_workers 0 --backbone tner/deberta-v3-large-ontonotes5 --epoches 100 --accelerator gpu --base_lr 1e-4

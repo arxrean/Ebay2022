@@ -33,7 +33,7 @@ class NERDataset:
 			assert len(x) == len(y)
 
 		if 'deberta' in opt.backbone:
-			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained("microsoft/deberta-v3-base")
 		elif 'robert' in opt.backbone:
 			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
 		else:
@@ -65,7 +65,7 @@ class NERDataset:
 				label_ids.append(0)
 			else:
 				label_ids.append(self.tag_mapping.get(labels[label_idx], 0))
-				if i < len(terms)-1 and terms[i+1][0] == chr(288):
+				if i < len(terms)-1 and terms[i+1][0] == chr(9601):
 					label_idx += 1
 
 		return tokenized_inputs, label_ids
@@ -100,7 +100,7 @@ class QuizDataset:
 		print(f"- max tokens: {max([len(x) for x in self.texts])}, min tokens: {min([len(x) for x in self.texts])}, avg tokens: {np.mean([len(x) for x in self.texts])}")
 		
 		if 'deberta' in opt.backbone:
-			self.tokenizer = DebertaTokenizerFast.from_pretrained(opt.backbone)
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
 		elif 'robert' in opt.backbone:
 			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
 		else:
@@ -123,7 +123,7 @@ class QuizDataset:
 	def align_label(self, texts, labels):
 		tokenized_inputs = self.tokenizer(' '.join(texts), padding='max_length', max_length=self.opt.max_len, truncation=True, return_tensors="pt")
 		terms = self.tokenizer.convert_ids_to_tokens(tokenized_inputs['input_ids'][0])
-		terms[1] = '{}{}'.format(chr(288), terms[1])
+		# terms[1] = '{}{}'.format(chr(288), terms[1])
 
 		label_idx = 0
 		label_ids = []
@@ -132,7 +132,7 @@ class QuizDataset:
 				label_ids.append(0)
 			else:
 				label_ids.append(self.tag_mapping.get(labels[label_idx], 0))
-				if i < len(terms)-1 and terms[i+1][0] == chr(288):
+				if i < len(terms)-1 and terms[i+1][0] == chr(9601):
 					label_idx += 1
 
 		return tokenized_inputs, label_ids
