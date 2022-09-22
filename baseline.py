@@ -38,7 +38,7 @@ def get_parser():
 	parser.add_argument('--val_pairs', type=int, default=1000)
 	parser.add_argument('--test_pairs', type=int, default=1000)
 	parser.add_argument('--classnum', type=int, default=0)
-	parser.add_argument('--batch_size', type=int, default=32)
+	parser.add_argument('--batch_size', type=int, default=64)
 	parser.add_argument('--num_workers', type=int, default=0)
 	parser.add_argument('--max_len', type=int, default=64)
 	parser.add_argument('--max_vocab', type=int, default=1000)
@@ -55,7 +55,7 @@ def get_parser():
 
 	# model
 	parser.add_argument('--pretrain', action='store_true')
-	parser.add_argument('--backbone', type=str, default='roberta-base')
+	parser.add_argument('--backbone', type=str, default='Jean-Baptiste/roberta-large-ner-english')
 	parser.add_argument('--embed_dim', type=int, default=32)
 	parser.add_argument('--hidden_dim', type=int, default=32)
 	parser.add_argument('--word_embed_size', type=int, default=128)
@@ -73,7 +73,6 @@ def main():
 	seed_everything(42, workers=True)
 
 	data_module = DERDatasetModule(opt)
-
 	model = BertBaseline(opt)
 	if not opt.test_only:
 		wandb_logger = WandbLogger(project="Ebay", log_model=True)
@@ -83,7 +82,7 @@ def main():
 		wandb_logger = WandbLogger(id=id, project="Ebay", resume="must")
 	model.wandb_logger = wandb_logger
 
-	checkpoint_callback = ModelCheckpoint(monitor="val_acc", mode="max")
+	checkpoint_callback = ModelCheckpoint(monitor="val_acc_epoch", mode="max")
 	trainer = Trainer(accelerator=opt.accelerator, devices=1, logger=wandb_logger, callbacks=[checkpoint_callback], max_epochs=opt.epoches)
 
 	if not opt.test_only:

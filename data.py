@@ -8,10 +8,11 @@ import torch
 from sklearn.model_selection import train_test_split
 from transformers import AutoTokenizer
 from transformers import BertTokenizerFast
-from transformers import DebertaTokenizerFast
+from transformers import DebertaV2TokenizerFast
 from transformers import RobertaTokenizerFast
 
 import pytorch_lightning as pl
+import torch.nn.functional as F
 
 import torchvision.transforms as transforms
 
@@ -32,7 +33,7 @@ class NERDataset:
 			assert len(x) == len(y)
 
 		if 'deberta' in opt.backbone:
-			self.tokenizer = DebertaTokenizerFast.from_pretrained(opt.backbone)
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
 		elif 'robert' in opt.backbone:
 			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
 		else:
@@ -46,33 +47,46 @@ class NERDataset:
 	def __getitem__(self, item):
 		text = self.texts[item]
 		tags = self.tags[item]
-		# print(' '.join(text))
-		# if 'Pioneer Express Route' in ' '.join(text):
-		# 	pdb.set_trace()
 
 		tokens, labels = self.align_label(text, tags)
 
-		return tokens['input_ids'][0], tokens['token_type_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long)
+		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long)
 
 
 	def align_label(self, texts, labels):
 		tokenized_inputs = self.tokenizer(' '.join(texts), padding='max_length', max_length=self.opt.max_len, truncation=True, return_tensors="pt")
+		terms = self.tokenizer.convert_ids_to_tokens(tokenized_inputs['input_ids'][0])
+		# terms[1] = '{}{}'.format(chr(288), terms[1])
 
-		word_ids = tokenized_inputs.word_ids()
-
-		previous_word_idx = None
+		label_idx = 0
 		label_ids = []
-
-		for word_idx in word_ids:
-			if word_idx is None:
+		for i, t in enumerate(terms):
+			if t in self.get_stop_tokens():
 				label_ids.append(0)
-			elif word_idx != previous_word_idx:
-				label_ids.append(self.tag_mapping.get(labels[word_idx], 0))
 			else:
-				label_ids.append(self.tag_mapping[labels[word_idx]] if self.opt.label_all_tokens else 0)
-			previous_word_idx = word_idx
+				label_ids.append(self.tag_mapping.get(labels[label_idx], 0))
+				if i < len(terms)-1 and terms[i+1][0] == chr(288):
+					label_idx += 1
 
 		return tokenized_inputs, label_ids
+
+
+	def get_stop_tokens(self):
+		if 'deberta' in self.opt.backbone:
+			return ['[CLS]', '[SEP]', '[PAD]']
+		elif 'robert' in self.opt.backbone:
+			return ['<s>', '</s>', '<pad>']
+		else:
+			return ['[CLS]', '[SEP]', '[PAD]']
+
+
+	def get_split_token(self):
+		if 'deberta' in self.opt.backbone:
+			return chr(288)
+		elif 'robert' in self.opt.backbone:
+			return chr(288)
+		else:
+			return '##'
 
 
 class QuizDataset:
@@ -103,29 +117,42 @@ class QuizDataset:
 
 		tokens, labels = self.align_label(text, tags)
 
-		return tokens['input_ids'][0], tokens['token_type_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long), self.ids[item]
+		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long), self.ids[item]
 
 
 	def align_label(self, texts, labels):
 		tokenized_inputs = self.tokenizer(' '.join(texts), padding='max_length', max_length=self.opt.max_len, truncation=True, return_tensors="pt")
+		terms = self.tokenizer.convert_ids_to_tokens(tokenized_inputs['input_ids'][0])
+		terms[1] = '{}{}'.format(chr(288), terms[1])
 
-		word_ids = tokenized_inputs.word_ids()
-
-		previous_word_idx = None
+		label_idx = 0
 		label_ids = []
-
-		for word_idx in word_ids:
-
-			if word_idx is None:
+		for i, t in enumerate(terms):
+			if t in self.get_stop_tokens():
 				label_ids.append(0)
-
-			elif word_idx != previous_word_idx:
-				label_ids.append(self.tag_mapping[labels[word_idx]])
 			else:
-				label_ids.append(self.tag_mapping[labels[word_idx]] if self.opt.label_all_tokens else 0)
-			previous_word_idx = word_idx
+				label_ids.append(self.tag_mapping.get(labels[label_idx], 0))
+				if i < len(terms)-1 and terms[i+1][0] == chr(288):
+					label_idx += 1
 
 		return tokenized_inputs, label_ids
+
+	def get_stop_tokens(self):
+		if 'deberta' in self.opt.backbone:
+			return ['[CLS]', '[SEP]', '[PAD]']
+		elif 'robert' in self.opt.backbone:
+			return ['<s>', '</s>', '<pad>']
+		else:
+			return ['[CLS]', '[SEP]', '[PAD]']
+
+
+	def get_split_token(self):
+		if 'deberta' in self.opt.backbone:
+			return chr(288)
+		elif 'robert' in self.opt.backbone:
+			return chr(288)
+		else:
+			return '##'
 
 
 class DERDatasetModule(pl.LightningDataModule):

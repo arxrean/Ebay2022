@@ -9,7 +9,7 @@ from transformers import AutoModelForTokenClassification
 from transformers import AutoTokenizer
 from transformers import AdamW, AutoModelForTokenClassification, get_scheduler
 from transformers import BertTokenizerFast, BertForTokenClassification
-from transformers import DebertaTokenizerFast, DebertaModel
+from transformers import DebertaV2TokenizerFast, DebertaV2ForTokenClassification
 from transformers import RobertaTokenizerFast, RobertaForTokenClassification
 
 from sklearn.metrics import det_curve
@@ -34,14 +34,14 @@ class BertBaseline(pl.LightningModule):
 		self.tag_mapping_inverse = dict((v, k) for k, v in self.tag_mapping.items())
 
 		if 'deberta' in opt.backbone:
-			self.model = DebertaModel.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1)
+			self.model = DebertaV2ForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1)
 		elif 'robert' in opt.backbone:
-			self.model = RobertaForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1)
+			self.model = RobertaForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1, ignore_mismatched_sizes=True)
 		else:
 			self.model = BertForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1)
 
 		if 'deberta' in opt.backbone:
-			self.tokenizer = DebertaTokenizerFast.from_pretrained(opt.backbone)
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
 		elif 'robert' in opt.backbone:
 			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
 		else:
@@ -49,16 +49,16 @@ class BertBaseline(pl.LightningModule):
 
 	def forward(self, batch):
 		### IMAGE #####
-		input_ids, attention_mask, token_type_ids, labels, ids = batch
+		input_ids, attention_mask, labels, ids = batch
 		if self.opt.accelerator == 'gpu':
-			input_ids, attention_mask, token_type_ids, labels = input_ids.cuda(), attention_mask.cuda(), token_type_ids.cuda(), labels.cuda()
+			input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
 
 		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
 
 		return logits, [self.tokenizer.convert_ids_to_tokens(x) for x in input_ids], ids
 
 	def training_step(self, batch, batch_idx):
-		input_ids, attention_mask, token_type_ids, labels = batch
+		input_ids, attention_mask, labels = batch
 
 		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
 
@@ -66,7 +66,7 @@ class BertBaseline(pl.LightningModule):
 		return loss
 
 	def validation_step(self, batch, batch_idx):
-		input_ids, token_type_ids, attention_mask, labels = batch
+		input_ids, attention_mask, labels = batch
 
 		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
 
@@ -88,7 +88,7 @@ class BertBaseline(pl.LightningModule):
 		self.log("val_acc", acc, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
 	def test_step(self, batch, batch_idx):
-		input_ids, attention_mask, token_type_ids, labels = batch
+		input_ids, attention_mask, labels = batch
 
 		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
 

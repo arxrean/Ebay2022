@@ -50,7 +50,6 @@ if __name__ == '__main__':
 	model = BertBaseline(opt)
 	model.eval()
 	model = model.cuda() if opt.accelerator == 'gpu' else model
-
 	wandb_logger = WandbLogger()
 	artifact = wandb_logger.experiment.use_artifact(opt.ckpt, type='model')
 	artifact_dir = artifact.download()
@@ -61,17 +60,19 @@ if __name__ == '__main__':
 		for idx, pack in enumerate(dataset_loader):
 			outs, input_ids, ids = model.forward(pack)
 			label_indices = np.argmax(outs.cpu().numpy(), axis=2)
-
 			for tokens, labels, id in zip(input_ids, label_indices, ids):
 				new_tokens, new_labels = [], []
-				for token, label_idx in zip(tokens, labels):
-					if token in ['[CLS]', '[SEP]', '[PAD]']:
+				for i, (token, label_idx) in enumerate(zip(tokens, labels)):
+					if token == '<s>':
+						tokens[i+1] = '{}{}'.format(chr(288), tokens[i+1])
 						continue
-					if token.startswith("##"):
-						new_tokens[-1] = new_tokens[-1] + token[2:]
-					else:
+					if token in ['</s>', '<pad>']:
+						continue
+					if token.startswith(chr(288)):
 						new_labels.append(label_idx)
-						new_tokens.append(token)
+						new_tokens.append(token[1:])
+					else:
+						new_tokens[-1] = new_tokens[-1] + token
 
 
 				origin_text = [x for x in csv[csv['Record Number']==id.item()]['Title'].tolist()[0].split()]
