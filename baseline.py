@@ -45,11 +45,15 @@ def get_parser():
 	parser.add_argument('--img_size', type=int, default=256)
 	parser.add_argument('--crop_size', type=int, default=224)
 
+	parser.add_argument('--replace_token_with_same_tag', type=float, default=0.)
+	parser.add_argument('--shuffle_token_with_same_tag', type=float, default=0.)
+	parser.add_argument('--drop_mention', type=float, default=0.5)
+
 	# train
 	parser.add_argument('--log', action='store_true')
 	parser.add_argument('--epoches', type=int, default=20)
 	parser.add_argument('--base_lr', type=float, default=1e-5)
-	parser.add_argument('--weight_decay', type=float, default=2e-5)
+	parser.add_argument('--weight_decay', type=float, default=0.)
 	parser.add_argument('--dropout', type=float, default=0.1)
 	parser.add_argument('--warm_up_split', type=int, default=5)
 
@@ -67,6 +71,7 @@ def get_parser():
 
 	return opt
 
+# CUDA_VISIBLE_DEVICES=2 python baseline.py --num_workers 0 --backbone tner/deberta-v3-large-ontonotes5 --epoches 50 --batch_size 32 --accelerator gpu --base_lr 1e-4 --weight_decay 2e-5
 
 def main():
 	opt = get_parser()

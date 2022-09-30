@@ -42,7 +42,7 @@ class BertBaseline(pl.LightningModule):
 			self.model = BertForTokenClassification.from_pretrained(opt.backbone, num_labels=len(self.tag_mapping)+1)
 
 		if 'deberta' in opt.backbone:
-			self.tokenizer = DebertaV2TokenizerFast.from_pretrained('microsoft/deberta-v3-base')
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
 		elif 'robert' in opt.backbone:
 			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
 		else:
@@ -131,7 +131,8 @@ class BertBaseline(pl.LightningModule):
 		optimizer = AdamW(
 			params,
 			lr=self.opt.base_lr,
-			eps=1e-12
+			eps=1e-12,
+			weight_decay=self.opt.weight_decay
 		)
 
 		return optimizer

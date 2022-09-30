@@ -4,7 +4,9 @@ from string import punctuation
 import pandas as pd
 import numpy as np
 from PIL import Image
+from collections import defaultdict
 import torch
+import random
 from sklearn.model_selection import train_test_split
 from transformers import AutoTokenizer
 from transformers import BertTokenizerFast
@@ -33,13 +35,20 @@ class NERDataset:
 			assert len(x) == len(y)
 
 		if 'deberta' in opt.backbone:
-			self.tokenizer = DebertaV2TokenizerFast.from_pretrained("microsoft/deberta-v3-base")
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
 		elif 'robert' in opt.backbone:
 			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
 		else:
 			self.tokenizer = BertTokenizerFast.from_pretrained(opt.backbone)
 
 		self.tag_mapping = {k:v+1 for k,v in np.load(opt.tag2idx, allow_pickle=True).item().items()}
+		self.tag2token = defaultdict(set)
+		for text, tags in zip(self.texts, self.tags):
+			seg_text, seg_tags = self.get_seg(text, tags)
+			for t, g in zip(seg_text, seg_tags):
+				self.tag2token[g].add(t)
+		total_tokens = sum(len(x) for x in self.tag2token.values())
+		self.tag2distri = {k:len(v)/total_tokens for k, v in self.tag2token.items()}
 
 	def __len__(self):
 		return len(self.texts)
@@ -48,9 +57,82 @@ class NERDataset:
 		text = self.texts[item]
 		tags = self.tags[item]
 
+		# replace_token_with_same_tag
+		if self.mode == 'train':
+			if self.opt.replace_token_with_same_tag > 0:
+				seg_text, seg_tags = self.get_seg(text, tags)
+				replace_token_with_same_tag = np.random.binomial(1, self.opt.replace_token_with_same_tag, len(seg_text))
+				for i in range(len(seg_text)):
+					if replace_token_with_same_tag[i]:
+						seg_text[i] = np.random.choice(list(self.tag2token[seg_tags[i]]))
+				_text, _tags = [], []
+				for i in range(len(seg_text)):
+					_text.append(seg_text[i])
+					_tags.append([seg_tags[i]]+len(seg_text[i].split()[1:])*['UNK'])
+				_text, _tags = ' '.join(_text).split(), np.concatenate(_tags)
+				assert len(_text) == len(_tags)
+				text, tags = _text, _tags
+
+			if self.opt.shuffle_token_with_same_tag > 0:
+				seg_text, seg_tags = self.get_seg(text, tags)
+				_seg_text, _seg_tags = [], []
+				for i in range(len(seg_text)):
+					if i > 0 and seg_tags[i] == seg_tags[i-1]:
+						_seg_text[-1] += seg_text[i].split()
+						_seg_tags[-1] += [(seg_tags[i], len(seg_text[i].split()))]
+					else:
+						_seg_text.append(seg_text[i].split())
+						_seg_tags.append([(seg_tags[i], len(seg_text[i].split()))])
+				seg_text, seg_tags = _seg_text, _seg_tags
+				for i in range(len(seg_text)):
+					if len(seg_text[i]) > 1:
+						seg_text[i] = list(np.random.permutation(seg_text[i]))
+				_text, _tags = [], []
+				for seg_t, seg_g in zip(seg_text, seg_tags):
+					for g in seg_g:
+						_text.append(' '.join(seg_t[:g[1]]))
+						_tags.append(g[0])
+						seg_t = seg_t[g[1]:]
+				seg_text, seg_tags = _text, _tags
+				_text, _tags = [], []
+				for i in range(len(seg_text)):
+					_text.append(seg_text[i])
+					_tags.append([seg_tags[i]]+len(seg_text[i].split()[1:])*['UNK'])
+				_text, _tags = ' '.join(_text).split(), np.concatenate(_tags)
+				assert len(_text) == len(_tags)
+				text, tags = _text, _tags
+			
+			if self.opt.drop_mention > 0:
+				seg_text, seg_tags = self.get_seg(text, tags)
+				drop_mentions = np.random.binomial(1, self.opt.drop_mention, len(seg_text))
+				while drop_mentions.sum() == 0:
+					drop_mentions = np.random.binomial(1, self.opt.drop_mention, len(seg_text))
+				_text, _tags = [], []
+				for i in range(len(seg_text)):
+					if drop_mentions[i]:
+						_text.append(seg_text[i])
+						_tags.append([seg_tags[i]]+len(seg_text[i].split()[1:])*['UNK'])
+				_text, _tags = ' '.join(_text).split(), np.concatenate(_tags)
+				assert len(_text) == len(_tags)
+				text, tags = _text, _tags
+
 		tokens, labels = self.align_label(text, tags)
 
 		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long)
+	
+
+	def get_seg(self, text, tags):
+		seg_text, seg_tags = [], []
+		idx = 0
+		while idx < len(text):
+			if tags[idx] != 'UNK':
+				seg_text.append(text[idx])
+				seg_tags.append(tags[idx])
+			else:
+				seg_text[-1] += ' ' + text[idx]
+			idx += 1
+		
+		return seg_text, seg_tags
 
 
 	def align_label(self, texts, labels):
