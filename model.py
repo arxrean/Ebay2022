@@ -1,6 +1,7 @@
 import os
 import io
 import pdb
+import clip
 import wandb
 import numpy as np
 import matplotlib.pyplot as plt
@@ -32,6 +33,7 @@ class BertBaseline(pl.LightningModule):
 		self.wandb_logger = None
 		self.tag_mapping = {k:v+1 for k,v in np.load(opt.tag2idx, allow_pickle=True).item().items()}
 		self.tag_mapping_inverse = dict((v, k) for k, v in self.tag_mapping.items())
+		self.ce_loss = nn.CrossEntropyLoss()
 
 		if 'deberta' in opt.backbone:
 			# model = torch.load('./dataset/pytorch_model.bin.1')
@@ -47,6 +49,14 @@ class BertBaseline(pl.LightningModule):
 			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
 		else:
 			self.tokenizer = BertTokenizerFast.from_pretrained(opt.backbone)
+		
+		self.clip = clip.load("ViT-B/32")[0]
+		for param in self.clip.parameters():
+			param.requires_grad = False
+		self.classifier = nn.Sequential(
+			nn.Dropout(0.1),
+			nn.Linear(in_features=1024+512, out_features=len(self.tag_mapping)+1, bias=True)
+		)
 
 	def forward(self, batch):
 		### IMAGE #####
@@ -56,21 +66,32 @@ class BertBaseline(pl.LightningModule):
 
 		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
 
+
 		return logits, [self.tokenizer.convert_ids_to_tokens(x) for x in input_ids], ids
+	
+	def forward_train(self, batch):
+		input_ids, attention_mask, labels, clip_tokens = batch
+		_, _, hiddens = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False, output_hidden_states=True)
+
+		text_features = self.clip.encode_text(clip_tokens.squeeze(1))
+		text_features = text_features.unsqueeze(1).repeat(1, 64, 1)
+		hiddens = torch.cat((hiddens[-1], text_features), -1)
+		logits = self.classifier(hiddens)
+		loss = self.ce_loss(logits.reshape(-1, 33), labels.reshape(-1))
+
+		return loss, logits
 
 	def training_step(self, batch, batch_idx):
-		input_ids, attention_mask, labels = batch
-
-		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
+		loss, logits = self.forward_train(batch)
 
 		self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=len(logits))
 		return loss
 
 	def validation_step(self, batch, batch_idx):
-		input_ids, attention_mask, labels = batch
+		input_ids, attention_mask, labels, clip_tokens = batch
 
-		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
-
+		loss, logits = self.forward_train(batch)
+		
 		self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
 		_logits, _labels = [], []
@@ -89,9 +110,9 @@ class BertBaseline(pl.LightningModule):
 		self.log("val_acc", acc, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
 	def test_step(self, batch, batch_idx):
-		input_ids, attention_mask, labels = batch
+		input_ids, attention_mask, labels, _ = batch
 
-		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
+		loss, logits = self.forward_train(batch)
 
 		return logits.cpu().numpy(), labels.cpu().numpy()
 
@@ -119,13 +140,10 @@ class BertBaseline(pl.LightningModule):
 		self.wandb_logger.experiment.log({"test/f1_each" : wandb.plot.bar(table, "tag", "f1", title="f1 per tag")})
 
 	def configure_optimizers(self):
-		my_list = 'classifier'
-		new_params = list(filter(lambda kv: my_list in kv[0], self.named_parameters()))
-		base_params = list(filter(lambda kv: my_list not in kv[0], self.named_parameters()))
-
 		params = [
-                {'params': [x[1] for x in new_params]},
-                {'params': [x[1] for x in base_params], 'lr': self.opt.base_lr/10}
+                {'params': self.classifier.parameters()},
+				{'params': self.clip.parameters(), 'lr': self.opt.base_lr/10},
+                {'params': self.model.parameters(), 'lr': self.opt.base_lr/10}
         	]
 
 		optimizer = AdamW(

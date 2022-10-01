@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 from collections import defaultdict
 import torch
+import clip
 import random
 from sklearn.model_selection import train_test_split
 from transformers import AutoTokenizer
@@ -56,6 +57,8 @@ class NERDataset:
 	def __getitem__(self, item):
 		text = self.texts[item]
 		tags = self.tags[item]
+
+		clip_tokens = clip.tokenize([' '.join(text)])
 
 		# replace_token_with_same_tag
 		if self.mode == 'train':
@@ -118,7 +121,7 @@ class NERDataset:
 
 		tokens, labels = self.align_label(text, tags)
 
-		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long)
+		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long), clip_tokens
 	
 
 	def get_seg(self, text, tags):

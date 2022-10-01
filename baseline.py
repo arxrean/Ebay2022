@@ -92,7 +92,7 @@ def main():
 
 	if not opt.test_only:
 		trainer.fit(model, data_module)
-		trainer.test(datamodule=data_module, ckpt_path="best")
+		# trainer.test(datamodule=data_module, ckpt_path="best")
 		# trainer.test(datamodule=data_module, model=model)
 	else:
 		artifact = wandb_logger.experiment.use_artifact(opt.ckpt, type='model')
