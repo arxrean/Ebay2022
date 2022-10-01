@@ -60,11 +60,11 @@ class BertBaseline(pl.LightningModule):
 
 	def forward(self, batch):
 		### IMAGE #####
-		input_ids, attention_mask, labels, ids = batch
+		input_ids, attention_mask, labels, ids, clip_tokens = batch
 		if self.opt.accelerator == 'gpu':
-			input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
+			input_ids, attention_mask, labels, clip_tokens = input_ids.cuda(), attention_mask.cuda(), labels.cuda(), clip_tokens.cuda()
 
-		loss, logits = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, return_dict=False)
+		loss, logits = self.forward_train([input_ids, attention_mask, labels, clip_tokens])
 
 
 		return logits, [self.tokenizer.convert_ids_to_tokens(x) for x in input_ids], ids

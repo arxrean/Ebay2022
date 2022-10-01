@@ -200,9 +200,11 @@ class QuizDataset:
 		text = self.texts[item]
 		tags = ['Brand'] * len(text)
 
+		clip_tokens = clip.tokenize([' '.join(text)])
+
 		tokens, labels = self.align_label(text, tags)
 
-		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long), self.ids[item]
+		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long), self.ids[item], clip_tokens
 
 
 	def align_label(self, texts, labels):
