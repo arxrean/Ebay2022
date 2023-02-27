@@ -29,6 +29,10 @@ def get_parser():
 	parser.add_argument('--tag2idx', type=str, default='./dataset/ebay/tag2idx.npy')
 
 	# data
+	parser.add_argument('--label_all_tokens', action='store_true')
+	parser.add_argument('--tag_distri', action='store_true')
+	parser.add_argument('--addon_n', type=int, default=10000)
+	parser.add_argument('--addon_w', type=float, default=1.0)
 	parser.add_argument('--train_frac', type=float, default=1.0)
 	parser.add_argument('--val_frac', type=float, default=1.0)
 	parser.add_argument('--test_frac', type=float, default=1.0)
@@ -37,24 +41,29 @@ def get_parser():
 	parser.add_argument('--val_pairs', type=int, default=1000)
 	parser.add_argument('--test_pairs', type=int, default=1000)
 	parser.add_argument('--classnum', type=int, default=0)
-	parser.add_argument('--batch_size', type=int, default=32)
+	parser.add_argument('--batch_size', type=int, default=64)
 	parser.add_argument('--num_workers', type=int, default=0)
 	parser.add_argument('--max_len', type=int, default=64)
 	parser.add_argument('--max_vocab', type=int, default=1000)
 	parser.add_argument('--img_size', type=int, default=256)
 	parser.add_argument('--crop_size', type=int, default=224)
 
+	parser.add_argument('--replace_token_with_same_tag', type=float, default=0.)
+	parser.add_argument('--shuffle_token_with_same_tag', type=float, default=0.)
+	parser.add_argument('--drop_mention', type=float, default=0.)
+
 	# train
 	parser.add_argument('--log', action='store_true')
+	parser.add_argument('--addon', action='store_true')
 	parser.add_argument('--epoches', type=int, default=20)
 	parser.add_argument('--base_lr', type=float, default=1e-5)
-	parser.add_argument('--weight_decay', type=float, default=2e-5)
+	parser.add_argument('--weight_decay', type=float, default=0.)
 	parser.add_argument('--dropout', type=float, default=0.1)
 	parser.add_argument('--warm_up_split', type=int, default=5)
 
 	# model
 	parser.add_argument('--pretrain', action='store_true')
-	parser.add_argument('--backbone', type=str, default='dslim/bert-base-NER')
+	parser.add_argument('--backbone', type=str, default='Jean-Baptiste/roberta-large-ner-english')
 	parser.add_argument('--embed_dim', type=int, default=32)
 	parser.add_argument('--hidden_dim', type=int, default=32)
 	parser.add_argument('--word_embed_size', type=int, default=128)
@@ -69,21 +78,24 @@ def get_parser():
 
 def main():
 	opt = get_parser()
-	seed_everything(42, workers=True)
+	# seed_everything(42, workers=True)
 
 	data_module = DERDatasetModule(opt)
-
 	model = BertBaseline(opt)
-	wandb_logger = WandbLogger(project="Ebay", log_model=True)
-	wandb_logger.experiment.config.update(vars(opt))
+	if not opt.test_only:
+		wandb_logger = WandbLogger(project="Ebay", log_model=True)
+		wandb_logger.experiment.config.update(vars(opt))
+	else:
+		id = opt.ckpt.split('/')[-1].split(':')[0].split('-')[1]
+		wandb_logger = WandbLogger(id=id, project="Ebay", resume="must")
 	model.wandb_logger = wandb_logger
 
-	checkpoint_callback = ModelCheckpoint(monitor="val_loss", mode="min")
+	checkpoint_callback = ModelCheckpoint(monitor="val_acc_epoch", mode="max")
 	trainer = Trainer(accelerator=opt.accelerator, devices=1, logger=wandb_logger, callbacks=[checkpoint_callback], max_epochs=opt.epoches)
 
 	if not opt.test_only:
 		trainer.fit(model, data_module)
-		trainer.test(datamodule=data_module, ckpt_path="best")
+		# trainer.test(datamodule=data_module, ckpt_path="best")
 		# trainer.test(datamodule=data_module, model=model)
 	else:
 		artifact = wandb_logger.experiment.use_artifact(opt.ckpt, type='model')

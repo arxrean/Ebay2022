@@ -1,31 +1,66 @@
+from audioop import add
 import os
 import pdb
+from string import punctuation
 import pandas as pd
 import numpy as np
 from PIL import Image
+from collections import defaultdict
 import torch
+import random
+from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from transformers import AutoTokenizer
+from transformers import BertTokenizerFast
+from transformers import DebertaV2TokenizerFast
+from transformers import RobertaTokenizerFast
 
 import pytorch_lightning as pl
+import torch.nn.functional as F
 
 import torchvision.transforms as transforms
 
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader 
 
+from utils import preprocess_token
 
 
 class NERDataset:
-	def __init__(self, opt, df):
+	def __init__(self, opt, df, mode):
 		# input is annotated data frame
 		self.opt = opt
-		self.texts = [eval(x) for x in df['Token'].to_list()]
+		self.mode = mode
+		self.texts = []
+		for x in df['Token'].to_list():
+			self.texts.append([preprocess_token(t) for t in eval(x)])
+
 		self.tags = [eval(x) for x in df['Tag'].to_list()]
-		model_checkpoint = opt.backbone
-		self.tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+		self.is_addons = df['is_add_on'].values
+		for x, y in zip(self.texts, self.tags):
+			assert len(x) == len(y)
+
+		if 'deberta' in opt.backbone:
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
+		elif 'robert' in opt.backbone:
+			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
+		else:
+			self.tokenizer = BertTokenizerFast.from_pretrained(opt.backbone)
 
 		self.tag_mapping = {k:v+1 for k,v in np.load(opt.tag2idx, allow_pickle=True).item().items()}
+		self.mapping_tag = {v:k for k,v in self.tag_mapping.items()}
+		self.tag2token = defaultdict(set)
+		for text, tags in zip(self.texts, self.tags):
+			seg_text, seg_tags = self.get_seg(text, tags)
+			for t, g in zip(seg_text, seg_tags):
+				self.tag2token[g].add(t)
+		total_tokens = sum(len(x) for x in self.tag2token.values())
+
+		# used for weighted loss
+		self.tag2distri = {k:len(v)/total_tokens for k, v in self.tag2token.items()}
+		self.tag2distri_weighted = {k:(1/v if 1/v <= 10 else 10) for k, v in self.tag2distri.items()}
+		# self.tag2distri_weighted = {k:(1/v if 1/v <= 20 else 20) for k, v in self.tag2distri.items()}
+		self.tag2distri_weighted = {k:v/max(self.tag2distri_weighted.values()) for k, v in self.tag2distri_weighted.items()}
 
 	def __len__(self):
 		return len(self.texts)
@@ -34,36 +69,118 @@ class NERDataset:
 		text = self.texts[item]
 		tags = self.tags[item]
 
-		ids = []
-		target_tag = []
+		# replace_token_with_same_tag
+		if self.mode == 'train':
+			if self.opt.replace_token_with_same_tag > 0:
+				seg_text, seg_tags = self.get_seg(text, tags)
+				replace_token_with_same_tag = np.random.binomial(1, self.opt.replace_token_with_same_tag, len(seg_text))
+				for i in range(len(seg_text)):
+					if replace_token_with_same_tag[i]:
+						seg_text[i] = np.random.choice(list(self.tag2token[seg_tags[i]]))
+				_text, _tags = [], []
+				for i in range(len(seg_text)):
+					_text.append(seg_text[i])
+					_tags.append([seg_tags[i]]+len(seg_text[i].split()[1:])*['UNK'])
+				_text, _tags = ' '.join(_text).split(), np.concatenate(_tags)
+				assert len(_text) == len(_tags)
+				text, tags = _text, _tags
 
-		# tokenize words and define tags accordingly
-		# running -> [run, ##ning]
-		# tags - ['O', 'O']
-		for i, s in enumerate(text):
-			inputs = self.tokenizer.encode(s, add_special_tokens=False)
-			input_len = len(inputs)
-			ids.extend(inputs)
-			target_tag.extend([self.tag_mapping[tags[i]]] * input_len)
+			if self.opt.shuffle_token_with_same_tag > 0:
+				seg_text, seg_tags = self.get_seg(text, tags)
+				_seg_text, _seg_tags = [], []
+				for i in range(len(seg_text)):
+					if i > 0 and seg_tags[i] == seg_tags[i-1]:
+						_seg_text[-1] += seg_text[i].split()
+						_seg_tags[-1] += [(seg_tags[i], len(seg_text[i].split()))]
+					else:
+						_seg_text.append(seg_text[i].split())
+						_seg_tags.append([(seg_tags[i], len(seg_text[i].split()))])
+				seg_text, seg_tags = _seg_text, _seg_tags
+				for i in range(len(seg_text)):
+					if len(seg_text[i]) > 1:
+						seg_text[i] = list(np.random.permutation(seg_text[i]))
+				_text, _tags = [], []
+				for seg_t, seg_g in zip(seg_text, seg_tags):
+					for g in seg_g:
+						_text.append(' '.join(seg_t[:g[1]]))
+						_tags.append(g[0])
+						seg_t = seg_t[g[1]:]
+				seg_text, seg_tags = _text, _tags
+				_text, _tags = [], []
+				for i in range(len(seg_text)):
+					_text.append(seg_text[i])
+					_tags.append([seg_tags[i]]+len(seg_text[i].split()[1:])*['UNK'])
+				_text, _tags = ' '.join(_text).split(), np.concatenate(_tags)
+				assert len(_text) == len(_tags)
+				text, tags = _text, _tags
+			
+			if self.opt.drop_mention > 0:
+				seg_text, seg_tags = self.get_seg(text, tags)
+				drop_mentions = np.random.binomial(1, self.opt.drop_mention, len(seg_text))
+				while drop_mentions.sum() == 0:
+					drop_mentions = np.random.binomial(1, self.opt.drop_mention, len(seg_text))
+				_text, _tags = [], []
+				for i in range(len(seg_text)):
+					if drop_mentions[i]:
+						_text.append(seg_text[i])
+						_tags.append([seg_tags[i]]+len(seg_text[i].split()[1:])*['UNK'])
+				_text, _tags = ' '.join(_text).split(), np.concatenate(_tags)
+				assert len(_text) == len(_tags)
+				text, tags = _text, _tags
 
-		# truncate
-		ids = ids[:self.opt.max_len - 2]
-		target_tag = target_tag[:self.opt.max_len - 2]
+		tokens, labels = self.align_label(text, tags)
 
-		# add special tokens
-		ids = [101] + ids + [102]
-		target_tag = [0] + target_tag + [0]
-		mask = [1] * len(ids)
-		token_type_ids = [0] * len(ids)
+		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long), self.is_addons[item], torch.tensor([self.tag2distri_weighted.get(self.mapping_tag.get(x, 'unk'), 1) for x in labels])
+	
 
-		# construct padding
-		padding_len = self.opt.max_len - len(ids)
-		ids = ids + ([0] * padding_len)
-		mask = mask + ([0] * padding_len)
-		token_type_ids = token_type_ids + ([0] * padding_len)
-		target_tag = target_tag + ([0] * padding_len)
+	def get_seg(self, text, tags):
+		seg_text, seg_tags = [], []
+		idx = 0
+		while idx < len(text):
+			if tags[idx] != 'UNK':
+				seg_text.append(text[idx])
+				seg_tags.append(tags[idx])
+			else:
+				seg_text[-1] += ' ' + text[idx]
+			idx += 1
+		
+		return seg_text, seg_tags
 
-		return torch.tensor(ids, dtype=torch.long), torch.tensor(mask, dtype=torch.long), torch.tensor(token_type_ids, dtype=torch.long), torch.tensor(target_tag, dtype=torch.long)
+
+	def align_label(self, texts, labels):
+		tokenized_inputs = self.tokenizer(' '.join(texts), padding='max_length', max_length=self.opt.max_len, truncation=True, return_tensors="pt")
+		terms = self.tokenizer.convert_ids_to_tokens(tokenized_inputs['input_ids'][0])
+		# terms[1] = '{}{}'.format(chr(288), terms[1])
+
+		label_idx = 0
+		label_ids = []
+		for i, t in enumerate(terms):
+			if t in self.get_stop_tokens():
+				label_ids.append(0)
+			else:
+				label_ids.append(self.tag_mapping.get(labels[label_idx], 0))
+				if i < len(terms)-1 and terms[i+1][0] == chr(9601):
+					label_idx += 1
+
+		return tokenized_inputs, label_ids
+
+
+	def get_stop_tokens(self):
+		if 'deberta' in self.opt.backbone:
+			return ['[CLS]', '[SEP]', '[PAD]']
+		elif 'robert' in self.opt.backbone:
+			return ['<s>', '</s>', '<pad>']
+		else:
+			return ['[CLS]', '[SEP]', '[PAD]']
+
+
+	def get_split_token(self):
+		if 'deberta' in self.opt.backbone:
+			return chr(288)
+		elif 'robert' in self.opt.backbone:
+			return chr(288)
+		else:
+			return '##'
 
 
 class QuizDataset:
@@ -72,10 +189,16 @@ class QuizDataset:
 		self.df = df
 		self.opt = opt
 		self.ids = df['Record Number'].to_list()
-		self.texts = df['Title'].str.split(' ').to_list()
+		titles = df['Title'].str.split(' ').to_list()
+		self.texts = [[preprocess_token(x) for x in ls] for ls in tqdm(df['Title'].str.split(' ').to_list())]
 		print(f"- max tokens: {max([len(x) for x in self.texts])}, min tokens: {min([len(x) for x in self.texts])}, avg tokens: {np.mean([len(x) for x in self.texts])}")
-		model_checkpoint = opt.backbone
-		self.tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+		
+		if 'deberta' in opt.backbone:
+			self.tokenizer = DebertaV2TokenizerFast.from_pretrained(opt.backbone)
+		elif 'robert' in opt.backbone:
+			self.tokenizer = RobertaTokenizerFast.from_pretrained(opt.backbone)
+		else:
+			self.tokenizer = BertTokenizerFast.from_pretrained(opt.backbone)
 
 		self.tag_mapping = {k:v+1 for k,v in np.load(opt.tag2idx, allow_pickle=True).item().items()}
 
@@ -84,34 +207,46 @@ class QuizDataset:
 
 	def __getitem__(self, item):
 		text = self.texts[item]
+		tags = ['Brand'] * len(text)
 
-		ids = []
-		target_tag = []
+		tokens, labels = self.align_label(text, tags)
 
-		# tokenize words and define tags accordingly
-		# running -> [run, ##ning]
-		# tags - ['O', 'O']
-		for i, s in enumerate(text):
-			inputs = self.tokenizer.encode(s, add_special_tokens=False)
-			input_len = len(inputs)
-			ids.extend(inputs)
+		return tokens['input_ids'][0], tokens['attention_mask'][0], torch.tensor(labels, dtype=torch.long), self.ids[item]
 
-		# truncate
-		ids = ids[:self.opt.max_len - 2]
 
-		# add special tokens
-		ids = [101] + ids + [102]
-		mask = [1] * len(ids)
-		token_type_ids = [0] * len(ids)
+	def align_label(self, texts, labels):
+		tokenized_inputs = self.tokenizer(' '.join(texts), padding='max_length', max_length=self.opt.max_len, truncation=True, return_tensors="pt")
+		terms = self.tokenizer.convert_ids_to_tokens(tokenized_inputs['input_ids'][0])
+		# terms[1] = '{}{}'.format(chr(288), terms[1])
 
-		# construct padding
-		padding_len = self.opt.max_len - len(ids)
-		ids = ids + ([0] * padding_len)
-		mask = mask + ([0] * padding_len)
-		token_type_ids = token_type_ids + ([0] * padding_len)
-		target_tag = [0] * self.opt.max_len
+		label_idx = 0
+		label_ids = []
+		for i, t in enumerate(terms):
+			if t in self.get_stop_tokens():
+				label_ids.append(0)
+			else:
+				label_ids.append(self.tag_mapping.get(labels[label_idx], 0))
+				if i < len(terms)-1 and terms[i+1][0] == chr(9601):
+					label_idx += 1
 
-		return torch.tensor(ids, dtype=torch.long), torch.tensor(mask, dtype=torch.long), torch.tensor(token_type_ids, dtype=torch.long), torch.tensor(target_tag, dtype=torch.long), self.ids[item]
+		return tokenized_inputs, label_ids
+
+	def get_stop_tokens(self):
+		if 'deberta' in self.opt.backbone:
+			return ['[CLS]', '[SEP]', '[PAD]']
+		elif 'robert' in self.opt.backbone:
+			return ['<s>', '</s>', '<pad>']
+		else:
+			return ['[CLS]', '[SEP]', '[PAD]']
+
+
+	def get_split_token(self):
+		if 'deberta' in self.opt.backbone:
+			return chr(288)
+		elif 'robert' in self.opt.backbone:
+			return chr(288)
+		else:
+			return '##'
 
 
 class DERDatasetModule(pl.LightningDataModule):
@@ -119,10 +254,21 @@ class DERDatasetModule(pl.LightningDataModule):
 		super().__init__()
 		self.opt = opt
 		self.df = pd.read_csv(opt.ner_path)
+		self.df['is_add_on'] = 0
+		self.df['mode'] = np.random.choice(self.df['mode'].values, len(self.df), replace=False)
+		# self.df.loc[self.df[self.df['mode']==1].sample(300).index, 'mode'] = 0
+		if self.opt.addon:
+			addon = pd.read_csv('./dataset/ebay/addon_train.csv')
+			if self.opt.addon_n > 0:
+				addon = addon.sample(n=self.opt.addon_n)
+			addon['is_add_on'] = 1
+			self.df = pd.concat((addon, self.df), axis=0)
+			self.df = self.df.sample(n=len(self.df)).reset_index(drop=True)
 
-		self.data_train = NERDataset(opt, self.df[self.df['mode']==0])
-		self.data_val = NERDataset(opt, self.df[self.df['mode']==1])
-		self.data_test = NERDataset(opt, self.df[self.df['mode']==2])
+		self.data_train = NERDataset(opt, self.df[(self.df['mode']==0)|(self.df['mode']==2)], mode='train')
+		self.data_val = NERDataset(opt, self.df[self.df['mode']==1], mode='val')
+		self.data_test = NERDataset(opt, self.df[self.df['mode']==2], mode='test')
+		print(f'train size {len(self.data_train)}, val size {len(self.data_val)}, test size {len(self.data_test)}')
 
 	def train_dataloader(self):
 		

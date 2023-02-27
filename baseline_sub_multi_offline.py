@@ -7,6 +7,7 @@ import random
 import pandas as pd
 import numpy as np
 import wandb
+import torch.nn.functional as F
 
 from sklearn.model_selection import train_test_split
 
@@ -23,17 +24,57 @@ from baseline import get_parser
 from utils import preprocess_token
 
 
+def isfloat(num):
+	try:
+		float(num)
+		return True
+	except ValueError:
+		return False
+
+
 def find_majority(k):
-    myMap = {}
-    maximum = ( '', 0 ) # (occurring element, occurrences)
-    for n in k:
-        if n in myMap: myMap[n] += 1
-        else: myMap[n] = 1
+	myMap = {}
+	maximum = ( '', 0 ) # (occurring element, occurrences)
+	for n in k:
+		if n in myMap: myMap[n] += 1
+		else: myMap[n] = 1
 
-        # Keep track of maximum on the go
-        if myMap[n] > maximum[1]: maximum = (n,myMap[n])
+		# Keep track of maximum on the go
+		if myMap[n] > maximum[1]: maximum = (n,myMap[n])
 
-    return maximum
+	return maximum
+
+
+class MultiModel:
+	def __init__(self, opt) -> None:
+		self.opt = opt
+		self.models = []
+		self.weights = []
+		for ckpt in opt.ckpt.split('~'):
+			if isfloat(ckpt):
+				self.weights.append(float(ckpt))
+			else:
+				model = BertBaseline(opt)
+				model.eval()
+				model = model.cuda() if opt.accelerator == 'gpu' else model
+				model.load_state_dict(torch.load(ckpt, map_location=torch.device('cpu'))['state_dict'])
+				self.models.append(model)
+		if not self.weights:
+			self.weights = torch.tensor([1]*len(self.models)).cuda() if opt.accelerator == 'gpu' else torch.tensor([1]*len(self.models))
+		else:
+			self.weights = torch.tensor(self.weights).cuda() if opt.accelerator == 'gpu' else torch.tensor(self.weights)
+		self.weights = F.softmax(self.weights).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+	
+	def forward(self, pack):
+		_outs, _input_ids, _ids = [], [], []
+		for model in self.models:
+			outs, input_ids, ids = model.forward(pack)
+			_outs.append(outs)
+			_input_ids.append(input_ids)
+			_ids.append(ids)
+
+		_outs = (torch.stack(_outs)*self.weights).sum(0)
+		return _outs, _input_ids[0], _ids[0]
 
 
 if __name__ == '__main__':
@@ -47,18 +88,12 @@ if __name__ == '__main__':
 	dataset = QuizDataset(opt, pd.read_csv(opt.quiz_path))
 	dataset_loader = DataLoader(dataset, batch_size=opt.batch_size, shuffle=False, num_workers=opt.num_workers)
 
-	model = BertBaseline(opt)
-	model.eval()
-	model = model.cuda() if opt.accelerator == 'gpu' else model
-	wandb_logger = WandbLogger()
-	artifact = wandb_logger.experiment.use_artifact(opt.ckpt, type='model')
-	artifact_dir = artifact.download()
-	model.load_state_dict(torch.load(os.path.join(artifact_dir, 'model.ckpt'), map_location=torch.device('cpu'))['state_dict'])
+	multi_model = MultiModel(opt)
 
 	submission = []
 	with torch.no_grad():
 		for idx, pack in enumerate(dataset_loader):
-			outs, input_ids, ids = model.forward(pack)
+			outs, input_ids, ids = multi_model.forward(pack)
 			label_indices = np.argmax(outs.cpu().numpy(), axis=2)
 			for tokens, labels, id in zip(input_ids, label_indices, ids):
 				new_tokens, new_labels = [], []
